@@ -1,0 +1,3 @@
+one apple
+two tree
+кодировка utf-8
