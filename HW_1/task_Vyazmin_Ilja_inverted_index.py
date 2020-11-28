@@ -4,11 +4,20 @@ import sys
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, FileType, ArgumentTypeError
 from collections import defaultdict
 from io import TextIOWrapper
-
 import struct
+import logging
+import logging.config
 
+import yaml
+
+APPLICATION_NAME = "inverted_index"
 DEFAULT_DATASET_PATH = "./wikipedia_sample"
 DEFAULT_INVERTED_INDEX_STORE_PATH = "inverted.index"
+DEFAULT_STOP_WORDS_PATH = "./stop_words_en.txt"
+DEFAULT_LOGGING_CONFIG_FILE_PATH = "logging.conf.yml"
+
+
+logger = logging.getLogger(APPLICATION_NAME)
 
 
 class EncodedFileType(FileType):
@@ -54,7 +63,7 @@ class InvertedIndex:
         assert isinstance(words, list), (
             "query should be provided with a list of words"
         )
-        print(f"query inverted index with request {repr(words)}", file=sys.stderr)
+        logger.debug("query inverted index with request %s", repr(words))
         response = set(self.dict_index.get(words[0], set()))
         words.pop(0)
         for word in words:
@@ -115,7 +124,7 @@ class InvertedIndex:
     @classmethod
     def load(cls, filepath: str):
         """Load inverted from binary file"""
-        print("load inverted index", file=sys.stderr)
+        logger.info("load inverted index %s", filepath)
         with open(filepath, 'rb') as load_file:
             dict_len = load_file.read(4)
             dict_len = struct.unpack('>i', dict_len)[0]
@@ -160,7 +169,7 @@ class InvertedIndex:
 
 def load_documents(filepath: str):
     """Load file with documents and put into dictionary"""
-    print("loading documents to build inverted index", file=sys.stderr)
+    logger.info("loading documents to build inverted index")
     documents = dict()
     with open(filepath, 'r') as doc_file:
         for line in doc_file:
@@ -170,14 +179,24 @@ def load_documents(filepath: str):
     return documents
 
 
+def load_stop_words(stop_words_path):
+    """Load file with stop words"""
+    logger.info("loading stop words")
+    stop_words = set()
+    with open(stop_words_path, 'r') as stop_words_file:
+        for line in stop_words_file:
+            word = line.rstrip()
+            stop_words.add(word)
+    return stop_words
 
-def build_inverted_index(documents):
+
+def build_inverted_index(documents, stop_words):
     """Take list of documents and return inverted index"""
-    print("building inverted index for provided documents", file=sys.stderr)
+    logger.info("building inverted index for provided documents")
     dict_index = defaultdict(list)
     for idx in documents:
         document = documents[idx].split()
-        document = set(document)
+        document = set(document) - stop_words
         for word in document:
             dict_index[word].append(idx)
 
@@ -188,13 +207,15 @@ def build_inverted_index(documents):
 
 def callback_build(arguments):
     """Callback for build mod"""
-    return process_build(arguments.dataset_path, arguments.output)
+    return process_build(arguments.dataset_path, arguments.stop_words, arguments.output)
 
 
-def process_build(dataset_path, output):
+def process_build(dataset_path, stop_words_path, output):
     """Contains building inverted index functionality"""
+    logger.debug("call build with: %s and %s", dataset_path, output)
     documents = load_documents(dataset_path)
-    inverted_index = build_inverted_index(documents)
+    stop_words = load_stop_words(stop_words_path)
+    inverted_index = build_inverted_index(documents, stop_words)
     inverted_index.dump(output)
     return inverted_index
 
@@ -250,6 +271,16 @@ def setup_parser(parser):
         default=DEFAULT_INVERTED_INDEX_STORE_PATH,
         help="path to store inverted index",
     )
+    build_parser.add_argument(
+        "-s", "--stop-words", dest='stop_words', required=False,
+        default=DEFAULT_STOP_WORDS_PATH,
+        help="path to stop words",
+    )
+    build_parser.add_argument(
+        "-v", "--verbocity", dest='verbocity', required=False,
+        default=0, action='count',
+        help="choose verbocity level",
+    )
     build_parser.set_defaults(callback=callback_build)
 
     query_parser = subparsers.add_parser(
@@ -277,8 +308,27 @@ def setup_parser(parser):
         default=TextIOWrapper(sys.stdin.buffer, encoding="cp1251"),
         help="query to run against inverted index",
     )
+    query_parser.add_argument(
+        "-v", "--verbocity", dest='verbocity', required=False,
+        default=0, action='count',
+        help="choose verbocity level",
+    )
     query_parser.set_defaults(callback=callback_query)
 
+def setup_logging(arguments):
+    """Sets up logging for CLI"""
+    verbocity_dict = {
+        1: logging.WARNING,
+        2: logging.INFO,
+        3: logging.DEBUG
+    }
+    with open(DEFAULT_LOGGING_CONFIG_FILE_PATH) as config_fin:
+        config = yaml.safe_load(config_fin)
+        if arguments.verbocity in (1, 2, 3):
+            config['handlers']['stream_handler']['level'] = verbocity_dict[arguments.verbocity]
+        else:
+            config['loggers']['inverted_index']['propagate'] = False
+        logging.config.dictConfig(config)
 
 def main():
     """Distributes work between functions"""
@@ -289,7 +339,8 @@ def main():
     )
     setup_parser(parser)
     arguments = parser.parse_args()
-    print(arguments, file=sys.stderr)
+    setup_logging(arguments)
+    logger.debug(arguments)
 
     arguments.callback(arguments)
 

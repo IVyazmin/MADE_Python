@@ -1,11 +1,12 @@
 from textwrap import dedent
 
 import pytest
+import logging
 
 from task_Vyazmin_Ilja_inverted_index import (
-	InvertedIndex, build_inverted_index, load_documents,
+	InvertedIndex, build_inverted_index, load_documents, load_stop_words,
 	process_file_queries, process_list_queries, DEFAULT_INVERTED_INDEX_STORE_PATH,
-	process_build, DEFAULT_DATASET_PATH
+	process_build, DEFAULT_STOP_WORDS_PATH, DEFAULT_DATASET_PATH
 )
 
 DATASET_TINY_STR = dedent("""\
@@ -14,6 +15,12 @@ DATASET_TINY_STR = dedent("""\
 	5	famous_phrases to_be
 	37	all words such as A_word and B_word are here
 """)
+
+STOP_WORDS_TINY = """
+qwerty
+snow
+to_be
+"""
 
 
 def test_correct_equel_objects():
@@ -30,6 +37,12 @@ def tiny_dataset_fio(tmpdir):
 	dataset_fio = tmpdir.join("dataset.txt")
 	dataset_fio.write(DATASET_TINY_STR)
 	return dataset_fio
+
+@pytest.fixture()
+def stop_words_fio(tmpdir):
+	stop_words_fio = tmpdir.join("stop_words_tiny.txt")
+	stop_words_fio.write(STOP_WORDS_TINY)
+	return stop_words_fio
 
 
 @pytest.fixture()
@@ -56,12 +69,14 @@ def test_can_load_documents(tiny_dataset_fio):
 		pytest.param(["A_word"], [123, 37], id="A_word"),
 		pytest.param(["B_word"], [2, 37], id="B_word"),
 		pytest.param(["A_word", "B_word"], [37], id="both words"),
-		pytest.param(["word_does_not_exist"], [], id="word does not exist")
+		pytest.param(["word_does_not_exist"], [], id="word does not exist"),
+		pytest.param(["to_be"], [], id="stop word")
 	],
 )
-def test_query_inverted_index_intersect_results(tiny_dataset_fio, query, etalon_answer):
+def test_query_inverted_index_intersect_results(tiny_dataset_fio, stop_words_fio, query, etalon_answer):
 	documents = load_documents(tiny_dataset_fio)
-	tiny_inverted_index = build_inverted_index(documents)
+	stop_words = load_stop_words(stop_words_fio)
+	tiny_inverted_index = build_inverted_index(documents, stop_words)
 	answer = tiny_inverted_index.query(query)
 	assert sorted(answer) == sorted(etalon_answer), (
 		f"Expected answer is {etalon_answer}, but you got {answer}"
@@ -79,15 +94,21 @@ def wikipedia_documents():
 	return wikipedia_documents
 
 
-def test_can_build_and_query_inverted_index(wikipedia_documents):
-	wikipedia_inverted_index = build_inverted_index(wikipedia_documents)
+@pytest.fixture()
+def stop_words_doc():
+	stop_words_doc = load_stop_words(DEFAULT_STOP_WORDS_PATH)
+	return stop_words_doc
+
+
+def test_can_build_and_query_inverted_index(wikipedia_documents, stop_words_doc):
+	wikipedia_inverted_index = build_inverted_index(wikipedia_documents, stop_words_doc)
 	doc_ids = wikipedia_inverted_index.query(["wikipedia"])
 	assert isinstance(doc_ids, list), "inverted index query should return list"
 
 
 @pytest.fixture
-def wikipedia_inverted_index(wikipedia_documents):
-	wikipedia_inverted_index = build_inverted_index(wikipedia_documents)
+def wikipedia_inverted_index(wikipedia_documents, stop_words_doc):
+	wikipedia_inverted_index = build_inverted_index(wikipedia_documents, stop_words_doc)
 	return wikipedia_inverted_index
 
 
@@ -100,9 +121,10 @@ def test_can_dump_and_load_inverted_index(tmpdir, wikipedia_inverted_index):
 	)
 
 
-def test_process_build_can_load_documents(tiny_dataset_fio, tiny_index):
+def test_process_build_can_load_documents(tiny_dataset_fio, stop_words_fio,  tiny_index):
 	process_build(
 		dataset_path=tiny_dataset_fio,
+		stop_words_path=stop_words_fio,
 		output=tiny_index
 	)
 	loaded_tiny_index = InvertedIndex.load(tiny_index)
@@ -118,7 +140,6 @@ def test_process_build_can_load_documents(tiny_dataset_fio, tiny_index):
 		'this': [2],
 		'dataset': [2],
 		'famous_phrases': [5],
-		'to_be': [5],
 		'all': [37],
 		'such': [37],
 		'as': [37],
@@ -130,19 +151,37 @@ def test_process_build_can_load_documents(tiny_dataset_fio, tiny_index):
 		"load should return the same inverted index"
 	)
 
-def test_process_file_queries_can_process_all_qutries_from_file(tiny_dataset_fio, capsys):
-	with open(tiny_dataset_fio) as query_fin:
+def test_process_file_queries_can_process_all_qutries_from_file(tiny_dataset_fio, stop_words_fio, tiny_index, capsys, caplog):
+	caplog.set_level("DEBUG")
+	documents = load_documents(tiny_dataset_fio)
+	stop_words = load_stop_words(stop_words_fio)
+	index = build_inverted_index(documents, stop_words)
+	index.dump(tiny_index)
+	with open("query_utf8.txt") as query_fin:
 		process_file_queries(
-			inverted_index_path=DEFAULT_INVERTED_INDEX_STORE_PATH,
+			inverted_index_path=tiny_index,
 			query_file=query_fin
 		)
 	captured = capsys.readouterr()
-	assert "load inverted index" not in captured.out
-	assert "load inverted index" in captured.err
+	assert captured.out == '\n\n\n'
+	assert captured.err == ''
 
-def test_process_file_list_can_process_all_qutries_from_list(tiny_dataset_fio, tiny_index, capsys):
+	assert any("load inverted index" in message for message in caplog.messages), (
+		"There is no 'load inverted index' in logs"
+	)
+	assert any("['one', 'apple']" in message for message in caplog.messages), (
+		"There is no ['one', 'apple'] in logs"
+	)
+	assert all(record.levelno <= logging.WARNING for record in caplog.records), (
+		"application is unstable"
+	)
+	
+
+
+def test_process_file_list_can_process_all_qutries_from_list(tiny_dataset_fio, stop_words_fio, tiny_index, capsys):
 	documents = load_documents(tiny_dataset_fio)
-	tiny_inverted_index = build_inverted_index(documents)
+	stop_words = load_stop_words(stop_words_fio)
+	tiny_inverted_index = build_inverted_index(documents, stop_words)
 	tiny_inverted_index.dump(tiny_index)
 	ids = process_list_queries(
 		inverted_index_path=tiny_index,
