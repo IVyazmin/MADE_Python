@@ -30,19 +30,6 @@ def test_page_not_found(client):
 	assert app_response.data.decode(app_response.charset) == ANSWER_PAGE_NOT_FOUND
 
 
-# @patch("requests.get")
-# def test_cbr_not_avalible(mock_requests_get, client):
-# 	mock_requests_get.status_code.value = 500
-# 	response = client.get("/cbr/daily")
-# 	assert response.status_code == 503
-# 	assert response.text == "CBR service is unavailable"
-
-
-# def callback_requests_get(url):
-# 	app_response = requests.get("/cbr/daily/xxx")
-# 	return app_response
-
-
 def test_cbr_daily(client):
 	app_response = client.get("/cbr/daily", follow_redirects=True)
 	assert app_response.status_code == 200
@@ -92,7 +79,3 @@ def test_can_get_some_assets(client):
 	app_response = client.get("/api/asset/get?name=name1&name=name2")
 	assert app_response.status_code == 200
 	assert app_response.data.decode(app_response.charset) == jsonify(TEST_BANK_RESPONSE[1:]).data.decode(app_response.charset)
-
-
-# def test_can_calculate_revenue(client):
-# 	
